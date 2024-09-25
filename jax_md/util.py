@@ -21,6 +21,8 @@ from jax.lib import xla_bridge
 import jax.numpy as jnp
 from jax import jit
 
+from jax.experimental import enable_x64
+
 from functools import partial
 
 import numpy as onp
@@ -94,8 +96,12 @@ def high_precision_sum(X: Array,
   else:
     dtyp = jnp.float64
 
-  return jnp.array(
-      jnp.sum(X, axis=axis, dtype=dtyp, keepdims=keepdims), dtype=X.dtype)
+  # Perform sum in high precision.
+  with enable_x64():
+    u = jnp.sum(X, axis=axis, dtype=dtyp, keepdims=keepdims)
+
+  # Cast back to original precision.
+  return jnp.array(u, dtype=X.dtype)
 
 
 def maybe_downcast(x):
