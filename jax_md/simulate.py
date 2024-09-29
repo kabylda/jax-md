@@ -796,7 +796,7 @@ def npt_nose_hoover(energy_fn: Callable[..., Array],
       box = jnp.eye(R.shape[-1]) * box
 
     state = NPTNoseHooverState(
-      R, None, force_fn(R, box=box, **kwargs),
+      R, None, jnp.asarray(force_fn(jnp.asarray(R, jnp.float32), box=jnp.asarray(box.astype, jnp.float32), **kwargs), R.dtype),
       mass, box, box_position, box_momentum, box_mass,
       barostat.initialize(1, KE_box, _kT),
       None)  # pytype: disable=wrong-arg-count
@@ -865,8 +865,8 @@ def npt_nose_hoover(energy_fn: Callable[..., Array],
 
     box = box_fn(vol)
     R = exp_iL1(box, R, P / M, P_b / M_b)
-    F = force_fn(R, box=box, **kwargs)
-
+    F = force_fn(jnp.asarray(R, jnp.float32), box=jnp.asarray(box, jnp.float32), **kwargs)
+    F = jnp.asarray(F, R.dtype)
     P = exp_iL2(alpha, P, F, P_b / M_b)
     G_e = box_force(alpha, vol, box_fn, R, P, M, F, _pressure, **kwargs)
     P_b = P_b + dt_2 * G_e
