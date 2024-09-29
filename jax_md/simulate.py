@@ -817,13 +817,13 @@ def npt_nose_hoover(energy_fn: Callable[..., Array],
     N, dim = position.shape
 
     def U(eps):
-      return energy_fn(position, box=box_fn(vol), perturbation=(1 + eps),
+      return energy_fn(jnp.asarray(position, jnp.float32), box=jnp.asarray(box_fn(vol), jnp.float32), perturbation=(1 + eps),
                        **kwargs)
 
     dUdV = grad(U)
     KE2 = util.high_precision_sum(momentum ** 2 / mass)
 
-    return alpha * KE2 - dUdV(0.0) - pressure * vol * dim
+    return alpha * KE2 - dUdV(jnp.asarray(0.0, jnp.float32)) - pressure * vol * dim
 
   def sinhx_x(x):
     """Taylor series for sinh(x) / x as x -> 0."""
