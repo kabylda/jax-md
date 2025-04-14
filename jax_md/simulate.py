@@ -282,11 +282,15 @@ def nve(energy_or_force_fn, shift_fn, dt=1e-3, **sim_kwargs):
   force_fn = quantity.canonicalize_force(energy_or_force_fn)
 
   @jit
-  def init_fn(key, R, kT, mass=f32(1.0), **kwargs):
+  def init_fn(key, R, kT, mass=f32(1.0), velocities=None, **kwargs):
     force = force_fn(R, **kwargs)
     state = NVEState(R, None, force, mass)
     state = canonicalize_mass(state)
-    return initialize_momenta(state, key, kT)
+    if velocities is None:
+      state = initialize_momenta(state, key, kT)
+    else:
+      state = state.set(momentum=state.mass * velocities)
+    return state
 
   @jit
   def step_fn(state, **kwargs):
@@ -589,14 +593,17 @@ def nvt_nose_hoover(energy_or_force_fn: Callable[..., Array],
   thermostat = nose_hoover_chain(dt, chain_length, chain_steps, sy_steps, tau)
 
   @jit
-  def init_fn(key, R, mass=f32(1.0), **kwargs):
+  def init_fn(key, R, mass=f32(1.0), velocities=None, **kwargs):
     _kT = kT if 'kT' not in kwargs else kwargs['kT']
 
     dof = quantity.count_dof(R)
 
     state = NVTNoseHooverState(R, None, force_fn(R, **kwargs), mass, None)
     state = canonicalize_mass(state)
-    state = initialize_momenta(state, key, _kT)
+    if velocities is None:
+      state = initialize_momenta(state, key, _kT)
+    else:
+      state = state.set(momentum=state.mass * velocities)
     KE = kinetic_energy(state)
     return state.set(chain=thermostat.initialize(dof, KE, _kT))
 
@@ -778,7 +785,7 @@ def npt_nose_hoover(energy_fn: Callable[..., Array],
   thermostat_kwargs = default_nhc_kwargs(100 * dt, thermostat_kwargs)
   thermostat = nose_hoover_chain(dt, **thermostat_kwargs)
 
-  def init_fn(key, R, box, mass=f32(1.0), **kwargs):
+  def init_fn(key, R, box, mass=f32(1.0), velocities=None, **kwargs):
     N, dim = R.shape
 
     _kT = kT if 'kT' not in kwargs else kwargs['kT']
@@ -801,7 +808,10 @@ def npt_nose_hoover(energy_fn: Callable[..., Array],
       barostat.initialize(1, KE_box, _kT),
       None)  # pytype: disable=wrong-arg-count
     state = canonicalize_mass(state)
-    state = initialize_momenta(state, key, _kT)
+    if velocities is None:
+      state = initialize_momenta(state, key, _kT)
+    else:
+      state = state.set(momentum=state.mass * velocities)
     KE = kinetic_energy(state)
     return state.set(
       thermostat=thermostat.initialize(quantity.count_dof(R), KE, _kT))
@@ -1047,13 +1057,17 @@ def nvt_langevin(energy_or_force_fn: Callable[..., Array],
   force_fn = quantity.canonicalize_force(energy_or_force_fn)
 
   @jit
-  def init_fn(key, R, mass=f32(1.0), **kwargs):
+  def init_fn(key, R, mass=f32(1.0), velocities=None, **kwargs):
     _kT = kwargs.pop('kT', kT)
     key, split = random.split(key)
     force = force_fn(R, **kwargs)
     state = NVTLangevinState(R, None, force, mass, key)
     state = canonicalize_mass(state)
-    return initialize_momenta(state, split, _kT)
+    if velocities is None:
+      state = initialize_momenta(state, key, _kT)
+    else:
+      state = state.set(momentum=state.mass * velocities)
+    return state
 
   @jit
   def step_fn(state, **kwargs):
@@ -1350,11 +1364,15 @@ def temp_rescale(energy_or_force_fn: Callable[..., Array],
     new_momentum = tree_map(lambda p: p * lam, state.momentum)
     return state.set(momentum = new_momentum)
 
-  def init_fn(key, R, mass=f32(1.0), **kwargs):
+  def init_fn(key, R, mass=f32(1.0), velocities=None, **kwargs):
     # Reuse the NVEState dataclass
     state = NVEState(R, None, force_fn(R, **kwargs), mass)
     state = canonicalize_mass(state)
-    return initialize_momenta(state, key, kT)
+    if velocities is None:
+      state = initialize_momenta(state, key, kT)
+    else:
+      state = state.set(momentum=state.mass * velocities)
+    return state
 
   def apply_fn(state, **kwargs):
     state = velocity_rescale(state, window, fraction, kT)
@@ -1411,7 +1429,11 @@ def temp_berendsen(energy_or_force_fn: Callable[..., Array],
     # Reuse the NVEState dataclass
     state = NVEState(R, None, force_fn(R, **kwargs), mass)
     state = canonicalize_mass(state)
-    return initialize_momenta(state, key, kT)
+    if velocities is None:
+      state = initialize_momenta(state, key, kT)
+    else:
+      state = state.set(momentum=state.mass * velocities)
+    return state
 
   def apply_fn(state, **kwargs):
     state = berendsen_update(state, tau, kT, dt)
@@ -1495,13 +1517,17 @@ def nvk(energy_or_force_fn: Callable[..., Array],
                             state.velocity)
     return state.set(position=new_position)
 
-  def init_fn(key, R, mass=f32(1.0), **kwargs):
+  def init_fn(key, R, mass=f32(1.0), velocities=None, **kwargs):
     _kT = kwargs.pop('kT', kT)
     key, split = random.split(key)
     # Reuse the NVEState dataclass
     state = NVEState(R, None, force_fn(R, **kwargs), mass)
     state = canonicalize_mass(state)
-    return initialize_momenta(state, split, _kT)
+    if velocities is None:
+      state = initialize_momenta(state, key, _kT)
+    else:
+      state = state.set(momentum=state.mass * velocities)
+    return state
 
   def apply_fn(state, **kwargs):
     _KE = kinetic_energy(state)
@@ -1609,13 +1635,18 @@ def temp_csvr(energy_or_force_fn: Callable[..., Array],
     new_momentum = tree_map(lambda p: p * lam, state.momentum)
     return state.set(momentum=new_momentum, rng=key)
 
-  def init_fn(key, R, mass=f32(1.0), **kwargs):
+  def init_fn(key, R, mass=f32(1.0), velocities=None, **kwargs):
     _kT = kwargs.pop('kT', kT)
     key, split = random.split(key)
     # Reuse the NVTLangevinState dataclass
     state = NVTLangevinState(R, None, force_fn(R, **kwargs), mass, key)
     state = canonicalize_mass(state)
     return initialize_momenta(state, split, _kT)
+    if velocities is None:
+      state = initialize_momenta(state, key, _kT)
+    else:
+      state = state.set(momentum=state.mass * velocities)
+    return state
 
   def apply_fn(state, **kwargs):
     state = csvr_update(state, tau, kT, dt)

@@ -34,6 +34,8 @@ INSTALL_REQUIRES = [
     'e3nn-jax',
     'dm-haiku',
     'optax',
+    'frozendict',
+    'pymatgen'
 ]
 
 setuptools.setup(
@@ -54,11 +56,11 @@ setuptools.setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     description='Differentiable, Hardware Accelerated, Molecular Dynamics',
-    python_requires='>=3.9',
+    python_requires='>=3.10',
     classifiers=[
-        'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
         'License :: OSI Approved :: Apache Software License',
         'Operating System :: MacOS',
         'Operating System :: POSIX :: Linux',
