@@ -19,7 +19,7 @@ import os
 from jax.core import ShapedArray
 from jax import eval_shape
 from jax import random
-from jax import tree_map
+from jax.tree_util import tree_map
 
 import jax.numpy as jnp
 
