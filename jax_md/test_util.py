@@ -187,8 +187,8 @@ class JAXMDTestCase(parameterized.TestCase):
     def is_finite(x):
       self.assertTrue(jnp.all(jnp.isfinite(x)))
 
-    jax.tree_map(is_finite, x)
-    jax.tree_map(is_finite, y)
+    jax.tree_util.tree_map(is_finite, x)
+    jax.tree_util.tree_map(is_finite, y)
 
     def assert_close(x, y):
       self._assertAllClose(
