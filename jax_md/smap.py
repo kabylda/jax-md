@@ -85,7 +85,7 @@ class ParameterTree:
       mapped functions, these parameters are processed according to the
       mapping.
     mapping: A ParameterTreeMapping object that specifies how the parameters
-      are processed. 
+      are processed.
   """
   tree: PyTree
   mapping: ParameterTreeMapping = dataclasses.static_field()
