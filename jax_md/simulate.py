@@ -1158,12 +1158,37 @@ def npt_nose_hoover_flex(
     """Compute energy, forces, and strain derivative dE/deps."""
     dim = position.shape[1]
     I = jnp.eye(dim, dtype=position.dtype)
-    zero = jnp.zeros((dim, dim), dtype=position.dtype)
 
-    def U(pos, eps):
-      return energy_fn(pos, box=box, perturbation=(I + eps), **kwargs)
+    if _coupling == 'anisotropic':
+      # Full [3,3] gradient needed for all 9 box DOFs
+      zero = jnp.zeros((dim, dim), dtype=position.dtype)
 
-    (E, (dEdR, dEdeps)) = value_and_grad(U, argnums=(0, 1))(position, zero)
+      def U(pos, eps):
+        return energy_fn(pos, box=box, perturbation=(I + eps), **kwargs)
+
+      (E, (dEdR, dEdeps)) = value_and_grad(U, argnums=(0, 1))(position, zero)
+    elif _coupling == 'semi_isotropic':
+      # Only diagonal stress components matter.
+      # Differentiate w.r.t. [3] diagonal vector instead of [3,3] matrix
+      # to reduce autodiff memory (6 fewer gradient channels).
+      zero_diag = jnp.zeros(dim, dtype=position.dtype)
+
+      def U_diag(pos, eps_diag):
+        return energy_fn(pos, box=box, perturbation=(I + jnp.diag(eps_diag)), **kwargs)
+
+      (E, (dEdR, dEdeps_diag)) = value_and_grad(U_diag, argnums=(0, 1))(position, zero_diag)
+      dEdeps = jnp.diag(dEdeps_diag)
+    else:  # isotropic
+      # Only the trace matters. Differentiate w.r.t. a single scalar
+      # (uniform scaling) to reduce from 3 to 1 gradient channel.
+      zero_scalar = jnp.zeros((), dtype=position.dtype)
+
+      def U_scalar(pos, eps_scalar):
+        return energy_fn(pos, box=box, perturbation=(I * (1 + eps_scalar)), **kwargs)
+
+      (E, (dEdR, dEdeps_scalar)) = value_and_grad(U_scalar, argnums=(0, 1))(position, zero_scalar)
+      dEdeps = (dEdeps_scalar / dim) * I
+
     F = -dEdR
     return E, F, dEdeps
 
