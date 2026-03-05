@@ -1049,38 +1049,8 @@ def npt_nose_hoover_invariant(
 # Flexible cell NPT (anisotropic / semi-isotropic barostat)
 # Based on: Tuckerman et al. J. Phys. A (2006), Yu et al.
 #           Chem. Phys. (2010), and the jax_md_flex_extension by
-#           Bichelmaier & Carrete Montana.
+#           Bichelmaier, Carrete & Madsen, Phys. Rev. B 110, 174105 (2024).
 # ---------------------------------------------------------------------------
-
-
-def pressure_tensor(
-  force: Array,
-  stress: Array,
-  position: Array,
-  velocity: Array,
-  mass: Array,
-  box: Box,
-  **kwargs,
-) -> Array:
-  """Internal pressure tensor for a flexible cell (Eq. 11 in Yu et al.).
-
-  Args:
-    force: Forces on atoms, shape [n, dim].
-    stress: Stress tensor from the potential, shape [dim, dim].
-    position: Fractional coordinates, shape [n, dim].
-    velocity: Velocities, shape [n, dim].
-    mass: Masses, shape [n, 1] or scalar.
-    box: Cell vectors (rows), shape [dim, dim].
-
-  Returns:
-    Symmetric pressure tensor, shape [dim, dim].
-  """
-  vol = jnp.linalg.det(box)
-  kinetic = jnp.einsum('ij,ik->jk', mass * velocity, velocity)
-  R = space.transform(box, position)
-  F_ext_R = jnp.einsum('ij,ik->jk', force, R)
-  P = 1.0 / vol * (kinetic + F_ext_R) - stress
-  return (P + P.T) / 2
 
 
 def kinetic_energy_box(velocity_box: Array, mass: Array) -> float:
@@ -1108,7 +1078,7 @@ class NPTNoseHooverFlexState:
     box_mass: Scalar mass for box DOF.
     barostat: NHC state for the barostat.
     thermostat: NHC state for the thermostat.
-    stress_tensor: Current stress tensor from potential, ``[dim, dim]``.
+    stress_tensor: Strain derivative dE/deps, ``[dim, dim]``.
   """
 
   position: Array
@@ -1146,7 +1116,7 @@ def npt_box_flex(state: NPTNoseHooverFlexState) -> Box:
 
 
 def npt_nose_hoover_flex(
-  energy_force_stress_fn: Callable,
+  energy_fn: Callable[..., Array],
   shift_fn: ShiftFn,
   dt: float,
   pressure: float,
@@ -1171,13 +1141,17 @@ def npt_nose_hoover_flex(
   - ``'isotropic'``: All dimensions scale by the same factor (diagonal,
     uniform scaling).
 
+  The ``energy_fn`` must accept a ``perturbation`` keyword argument (a
+  ``[dim, dim]`` matrix that scales displacements). This is the standard
+  interface for jax-md energy functions built with ``smap`` or standard
+  spaces.
+
   Args:
-    energy_force_stress_fn: A function
-      ``(R, box=box, **kw) -> (energy, forces, stress_tensor)``
-      where ``stress_tensor`` has shape ``[dim, dim]``.
+    energy_fn: A function that produces energy from particle positions.
+      Must support ``perturbation`` kwarg for stress computation.
     shift_fn: Displacement function for periodic boundaries.
     dt: Timestep.
-    pressure: Target pressure (same units as stress tensor).
+    pressure: Target pressure (same units as energy / volume).
     kT: Target temperature in energy units.
     coupling: One of ``'isotropic'``, ``'semi-isotropic'``, ``'anisotropic'``.
     barostat_kwargs: NHC kwargs for the barostat.
@@ -1188,47 +1162,58 @@ def npt_nose_hoover_flex(
     ``(init_fn, apply_fn)`` simulator pair.
   """
 
-  dt = f32(dt)
+  _dt = f32(dt)
   dt_2 = f32(dt / 2)
 
+  force_fn = quantity.force(energy_fn)
+
   barostat_kwargs = default_nhc_kwargs(1000 * dt, barostat_kwargs)
-  barostat = nose_hoover_chain(dt, **barostat_kwargs)
+  barostat = nose_hoover_chain(_dt, **barostat_kwargs)
 
   thermostat_kwargs = default_nhc_kwargs(100 * dt, thermostat_kwargs)
-  thermostat = nose_hoover_chain(dt, **thermostat_kwargs)
+  thermostat = nose_hoover_chain(_dt, **thermostat_kwargs)
 
   tau_box = tau_box if tau_box is not None else barostat_kwargs['tau']
 
-  coupling = coupling.lower().replace('-', '_').replace(' ', '_')
-  if coupling not in ('isotropic', 'semi_isotropic', 'anisotropic'):
+  _coupling = coupling.lower().replace('-', '_').replace(' ', '_')
+  if _coupling not in ('isotropic', 'semi_isotropic', 'anisotropic'):
     raise ValueError(
       f"coupling must be 'isotropic', 'semi-isotropic', or 'anisotropic', "
       f"got '{coupling}'"
     )
 
+  def force_and_stress_fn(position, box, **kwargs):
+    """Compute energy, forces, and strain derivative dE/deps."""
+    dim = position.shape[1]
+    I = jnp.eye(dim, dtype=position.dtype)
+    zero = jnp.zeros((dim, dim), dtype=position.dtype)
+
+    def U(pos, eps):
+      return energy_fn(pos, box=box, perturbation=(I + eps), **kwargs)
+
+    (E, (dEdR, dEdeps)) = value_and_grad(U, argnums=(0, 1))(position, zero)
+    F = -dEdR
+    return E, F, dEdeps
+
   def _apply_coupling_constraint(G, dim):
     """Project box force/velocity to respect coupling constraints."""
-    if coupling == 'anisotropic':
+    if _coupling == 'anisotropic':
       return G
-    elif coupling == 'semi_isotropic':
-      # Zero off-diagonals, average xy components
+    elif _coupling == 'semi_isotropic':
       G_diag = jnp.diag(jnp.diag(G))
       xy_avg = (G_diag[0, 0] + G_diag[1, 1]) / 2
       return G_diag.at[0, 0].set(xy_avg).at[1, 1].set(xy_avg)
     else:  # isotropic
-      # All diagonal elements equal, no off-diagonals
       avg = jnp.trace(G) / dim
       return jnp.eye(dim) * avg
 
   def _apply_box_constraint(box, ref_box, dim):
     """Project box to respect coupling constraints."""
-    if coupling == 'anisotropic':
+    if _coupling == 'anisotropic':
       return box
-    elif coupling == 'semi_isotropic':
-      # Keep box diagonal; average xy scaling
+    elif _coupling == 'semi_isotropic':
       box_diag = jnp.diag(jnp.diag(box))
       ref_diag = jnp.diag(ref_box)
-      # xy: use average scale factor from xx and yy
       sx = box_diag[0, 0] / ref_diag[0]
       sy = box_diag[1, 1] / ref_diag[1]
       s_xy = (sx + sy) / 2
@@ -1242,23 +1227,13 @@ def npt_nose_hoover_flex(
       scale = (vol / ref_vol) ** (1.0 / dim)
       return jnp.diag(ref_diag * scale)
 
-  def _canonicalize_mass_flex(mass):
-    if isinstance(mass, float):
-      return mass
-    elif isinstance(mass, jnp.ndarray) or hasattr(mass, 'ndim'):
-      if mass.ndim == 2 and mass.shape[1] == 1:
-        return mass
-      elif mass.ndim == 1:
-        return jnp.reshape(mass, (mass.shape[0], 1))
-      elif mass.ndim == 0:
-        return mass
-    return mass
-
   def init_fn(key, R, box, mass=f32(1.0), **kwargs):
     N, dim = R.shape
 
     _kT = kT if 'kT' not in kwargs else kwargs.pop('kT')
-    mass = _canonicalize_mass_flex(mass)
+    mass = canonicalize_mass(NPTNoseHooverFlexState(
+      R, None, None, mass, None, None, None, None, None, None
+    )).mass
     V = jnp.sqrt(_kT / mass) * random.normal(key, R.shape, dtype=R.dtype)
     V = V - jnp.mean(V * mass, axis=0, keepdims=True) / mass
     KE = quantity.kinetic_energy(velocity=V, mass=mass)
@@ -1274,7 +1249,7 @@ def npt_nose_hoover_flex(
     box_mass = (N + 1) * _kT * tau_box ** 2 * one
     KE_box = kinetic_energy_box(box_velocity, box_mass)
 
-    energy, force, stress = energy_force_stress_fn(R, box=box, **kwargs)
+    energy, force, dEdeps = force_and_stress_fn(R, box, **kwargs)
 
     state = NPTNoseHooverFlexState(
       R,
@@ -1287,7 +1262,7 @@ def npt_nose_hoover_flex(
       box_mass,
       barostat.initialize(dim ** 2 - dim, KE_box, _kT),
       thermostat.initialize(R.size, KE, _kT),
-      stress,
+      dEdeps,
     )  # pytype: disable=wrong-arg-count
     return state
 
@@ -1297,13 +1272,24 @@ def npt_nose_hoover_flex(
     box_mass = jnp.array((N + 1) * kT * tau_box ** 2, dtype)
     return state.set(box_mass=box_mass)
 
-  def box_force(box, position, velocity, mass, pressure, force, stress):
-    """Force on the box (Eq. 41 in Yu et al.)."""
+  def box_force_fn(box, velocity, mass, pressure, dEdeps):
+    """Force on the box from strain derivative and kinetic pressure.
+
+    Uses the strain derivative dE/deps (computed via the perturbation
+    method) for an exact stress tensor, valid for many-body potentials.
+
+    The internal pressure tensor is:
+      P_int = (1/V) * KE_tensor - (1/V) * dE/deps
+
+    The box force (Eq. 41 in Yu et al.) becomes:
+      G = KE_tensor - dE/deps - V*P_ext*I + KE2/(Nd)*I
+    """
     N, dim = velocity.shape
-    KE2 = util.high_precision_sum(velocity ** 2 * mass)
-    p_int = pressure_tensor(force, stress, position, velocity, mass, box)
-    box_contrib = jnp.linalg.det(box) * (p_int - jnp.eye(dim) * pressure)
-    G = box_contrib + 1.0 / (N * dim) * KE2 * jnp.eye(dim)
+    vol = jnp.abs(jnp.linalg.det(box))
+    KE_tensor = jnp.einsum('ij,ik->jk', mass * velocity, velocity)
+    KE2 = jnp.trace(KE_tensor)
+    G = KE_tensor - dEdeps - vol * pressure * jnp.eye(dim) \
+      + KE2 / (N * dim) * jnp.eye(dim)
     return _apply_coupling_constraint(G, dim)
 
   def sinhx_x(x):
@@ -1312,7 +1298,7 @@ def npt_nose_hoover_flex(
 
   def exp_iL1(lam, O, R, V, box, **kwargs):
     """Position + cell propagation."""
-    x = lam * dt
+    x = lam * _dt
     x_2 = x / 2
     vexpdt = jnp.exp(x)
     sinhV = sinhx_x(x_2)
@@ -1331,7 +1317,7 @@ def npt_nose_hoover_flex(
     tempv = V @ roll_mtv
 
     R_new = space.transform(inv_box, tempx)
-    R_return = shift_fn(R_new, dt * tempv, box=box, **kwargs)
+    R_return = shift_fn(R_new, _dt * tempv, box=box, **kwargs)
 
     hmat_t = O.T @ box
     hmat_t = hmat_t * vexpdt[:, jnp.newaxis]
@@ -1362,7 +1348,7 @@ def npt_nose_hoover_flex(
     _pressure = kwargs.pop('pressure', pressure)
 
     R, V, M, F = state.position, state.velocity, state.mass, state.force
-    R_b, V_b, M_b, S_b = (
+    R_b, V_b, M_b, dEdeps = (
       state.box_position,
       state.box_velocity,
       state.box_mass,
@@ -1371,7 +1357,7 @@ def npt_nose_hoover_flex(
 
     N, dim = R.shape
 
-    G_g = box_force(R_b, R, V, M, _pressure, F, S_b)
+    G_g = box_force_fn(R_b, V, M, _pressure, dEdeps)
     V_b = V_b + dt_2 * G_g / M_b
     V_b = _apply_coupling_constraint(V_b, dim)
 
@@ -1381,14 +1367,13 @@ def npt_nose_hoover_flex(
     V = exp_iL2(lam, O, bTr, F / M, V)
     R, R_b = exp_iL1(lam, O, R, V, R_b, **kwargs)
 
-    # Apply box constraint after propagation
     R_b = _apply_box_constraint(R_b, state.reference_box, dim)
 
-    energy, F, S_b = energy_force_stress_fn(R, box=R_b, **kwargs)
+    energy, F, dEdeps = force_and_stress_fn(R, R_b, **kwargs)
 
     V = exp_iL2(lam, O, bTr, F / M, V)
 
-    G_g = box_force(R_b, R, V, M, _pressure, F, S_b)
+    G_g = box_force_fn(R_b, V, M, _pressure, dEdeps)
     V_b = V_b + dt_2 * G_g / M_b
     V_b = _apply_coupling_constraint(V_b, dim)
 
@@ -1398,7 +1383,7 @@ def npt_nose_hoover_flex(
       force=F,
       box_position=R_b,
       box_velocity=V_b,
-      stress_tensor=S_b,
+      stress_tensor=dEdeps,
       reference_box=R_b,
     )
 
@@ -1433,20 +1418,18 @@ def npt_nose_hoover_flex(
 
 
 def npt_nose_hoover_flex_invariant(
-  energy_force_stress_fn: Callable,
+  energy_fn: Callable[..., Array],
   state: NPTNoseHooverFlexState,
   pressure: float,
   kT: float,
   **kwargs,
 ) -> float:
   """Conserved quantity for flexible-cell NPT (for debugging)."""
-  energy, _, _ = energy_force_stress_fn(
-    state.position, box=state.box_position, **kwargs
-  )
+  PE = energy_fn(state.position, box=state.box_position, **kwargs)
   KE = quantity.kinetic_energy(velocity=state.velocity, mass=state.mass)
 
   DOF = state.position.size
-  E = energy + KE
+  E = PE + KE
 
   c = state.thermostat
   E += c.momentum[0] ** 2 / (2 * c.mass[0]) + DOF * kT * c.position[0]
