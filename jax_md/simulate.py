@@ -907,15 +907,13 @@ def npt_nose_hoover(
     return alpha * KE2 - dUdV - pressure * vol * dim
 
   def sinhx_x(x):
-    """Taylor series for sinh(x) / x as x -> 0."""
-    return (
-      1
-      + x**2 / 6
-      + x**4 / 120
-      + x**6 / 5040
-      + x**8 / 362_880
-      + x**10 / 39_916_800
-    )
+    """Compute sinh(x)/x, stable near x=0."""
+    small = jnp.abs(x) < 0.01
+    # Guard x=0 to avoid 0/0 in the exact branch (jnp.where evaluates both)
+    safe_x = jnp.where(small, jnp.ones_like(x), x)
+    exact = jnp.sinh(safe_x) / safe_x
+    taylor = 1 + x**2 / 6 + x**4 / 120 + x**6 / 5040
+    return jnp.where(small, taylor, exact)
 
   def exp_iL1(box, R, V, V_b, **kwargs):
     x = V_b * dt
@@ -1206,6 +1204,7 @@ def npt_nose_hoover_flex(
         return energy_fn(pos, box=box, perturbation=(I + eps), **kwargs)
 
       (E, (dEdR, dEdeps)) = value_and_grad(U, argnums=(0, 1))(position, zero)
+      dEdeps = (dEdeps + dEdeps.T) / 2  # Symmetrize: remove unphysical torque components
     elif _coupling == 'semi_isotropic':
       # Only diagonal stress components matter.
       # Differentiate w.r.t. [3] diagonal vector instead of [3,3] matrix
@@ -1336,47 +1335,54 @@ def npt_nose_hoover_flex(
     return _apply_coupling_constraint(G, dim)
 
   def sinhx_x(x):
-    """Taylor series for sinh(x) / x as x -> 0."""
-    return (
-      1
-      + x**2 / 6
-      + x**4 / 120
-      + x**6 / 5040
-      + x**8 / 362_880
-      + x**10 / 39_916_800
-    )
+    """Compute sinh(x)/x, stable near x=0."""
+    small = jnp.abs(x) < 0.01
+    # Guard x=0 to avoid 0/0 in the exact branch (jnp.where evaluates both)
+    safe_x = jnp.where(small, jnp.ones_like(x), x)
+    exact = jnp.sinh(safe_x) / safe_x
+    taylor = 1 + x**2 / 6 + x**4 / 120 + x**6 / 5040
+    return jnp.where(small, taylor, exact)
 
   def exp_iL1(lam, O, R, V, box, **kwargs):
     """Position + cell propagation."""
-    x = lam * _dt
+    orig_dtype = R.dtype
+    # lam, O arrive in float64 from inner_step
+    x = lam * _dt          # float64
     x_2 = x / 2
-    vexpdt = jnp.exp(x)
+    vexpdt = jnp.exp(x)    # float64
     sinhV = sinhx_x(x_2)
     vsindt = jnp.exp(x_2) * sinhV
 
-    positions = space.transform(box, R)
-    inv_box = jnp.linalg.inv(box)
+    positions = space.transform(box, R)  # stays in orig_dtype
 
-    vtempx = O * vexpdt[jnp.newaxis, :]
-    vtempv = O * vsindt[jnp.newaxis, :]
+    vtempx = O * vexpdt[jnp.newaxis, :]  # float64
+    vtempv = O * vsindt[jnp.newaxis, :]  # float64
 
-    roll_mtx = vtempx @ O.T
-    roll_mtv = vtempv @ O.T
+    roll_mtx = vtempx @ O.T  # float64
+    roll_mtv = vtempv @ O.T  # float64
 
-    tempx = positions @ roll_mtx
-    tempv = V @ roll_mtv
+    # Cast rotation matrices back before multiplying with positions/velocities
+    tempx = positions @ roll_mtx.astype(orig_dtype)
+    tempv = V @ roll_mtv.astype(orig_dtype)
 
-    R_new = space.transform(inv_box, tempx)
-    R_return = shift_fn(R_new, _dt * tempv, box=box, **kwargs)
-
-    hmat_t = O.T @ box
+    # Compute new box in float64: hmat_new = expm(V_b * dt) @ box
+    box_f64 = box.astype(jnp.float64)
+    hmat_t = O.T @ box_f64
     hmat_t = hmat_t * vexpdt[:, jnp.newaxis]
-    hmat_new = O @ hmat_t
+    hmat_new_f64 = O @ hmat_t
+    hmat_new = hmat_new_f64.astype(orig_dtype)
+
+    # Inverse in float64, cast back for fractional coordinate conversion
+    inv_hmat_new = jnp.linalg.inv(hmat_new_f64).astype(orig_dtype)
+    R_new = space.transform(inv_hmat_new, tempx)
+    R_return = shift_fn(R_new, _dt * tempv, box=hmat_new, **kwargs)
 
     return R_return, hmat_new
 
   def exp_iL2(lam, O, bTr, A, V):
     """Velocity propagation."""
+    orig_dtype = V.dtype
+    # lam, O, bTr arrive in float64 from inner_step
     x = (lam + bTr) * dt_2
     x_2 = x / 2
     vexpdt = jnp.exp(-x)
@@ -1385,8 +1391,8 @@ def npt_nose_hoover_flex(
     vtempf = O * vsindt[jnp.newaxis, :]
     vtempv = O * vexpdt[jnp.newaxis, :]
 
-    roll_mtf = vtempf @ O.T
-    roll_mtvv = vtempv @ O.T
+    roll_mtf = (vtempf @ O.T).astype(orig_dtype)
+    roll_mtvv = (vtempv @ O.T).astype(orig_dtype)
 
     tempv = V @ roll_mtvv
     tempf = A @ roll_mtf
@@ -1411,7 +1417,8 @@ def npt_nose_hoover_flex(
     V_b = V_b + dt_2 * G_g / M_b
     V_b = _apply_coupling_constraint(V_b, dim)
 
-    lam, O = jnp.linalg.eigh(V_b)
+    # Upcast V_b to float64 for eigendecomposition — [3,3] ops are negligible cost
+    lam, O = jnp.linalg.eigh(V_b.astype(jnp.float64))
     bTr = 1 / (dim * N) * lam.sum()
 
     V = exp_iL2(lam, O, bTr, F / M, V)
@@ -1449,11 +1456,6 @@ def npt_nose_hoover_flex(
 
     S = S.set(velocity=V, box_velocity=V_b)
     S = inner_step(S, **kwargs)
-
-    # Safety: project box onto coupling subspace (should be no-op if V_b
-    # constraints are exact, but guards against floating-point drift).
-    R_b = _apply_box_constraint(S.box_position, S.reference_box, S.position.shape[1])
-    S = S.set(box_position=R_b, reference_box=R_b)
 
     KE = quantity.kinetic_energy(velocity=S.velocity, mass=S.mass)
     tc = tc.set(kinetic_energy=KE)
