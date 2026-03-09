@@ -495,7 +495,7 @@ def nose_hoover_chain(
       return P, state
 
     delta = dt / chain_steps
-    ws = jnp.array(SUZUKI_YOSHIDA_WEIGHTS[sy_steps])
+    ws = jnp.array(SUZUKI_YOSHIDA_WEIGHTS[sy_steps], dtype=f32)
 
     def body_fn(cs, i):
       d = f32(delta * ws[i % sy_steps])
@@ -1240,7 +1240,7 @@ def npt_nose_hoover_flex(
       return G_diag.at[0, 0].set(xy_avg).at[1, 1].set(xy_avg)
     else:  # isotropic
       avg = jnp.trace(G) / dim
-      return jnp.eye(dim) * avg
+      return jnp.eye(dim, dtype=G.dtype) * avg
 
   def _apply_box_constraint(box, ref_box, dim):
     """Project box to respect coupling constraints."""
@@ -1330,8 +1330,9 @@ def npt_nose_hoover_flex(
     vol = jnp.abs(jnp.linalg.det(box))
     KE_tensor = _kinetic_energy_tensor(mass, velocity)
     KE2 = jnp.trace(KE_tensor)
-    G = KE_tensor - dEdeps - vol * pressure * jnp.eye(dim) \
-      + KE2 / (N * dim) * jnp.eye(dim)
+    _dtype = velocity.dtype
+    G = KE_tensor - dEdeps - vol * pressure * jnp.eye(dim, dtype=_dtype) \
+      + KE2 / (N * dim) * jnp.eye(dim, dtype=_dtype)
     return _apply_coupling_constraint(G, dim)
 
   def sinhx_x(x):
