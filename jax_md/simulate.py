@@ -482,7 +482,7 @@ def nose_hoover_chain(
       return P, state
 
     delta = dt / chain_steps
-    ws = jnp.array(SUZUKI_YOSHIDA_WEIGHTS[sy_steps])
+    ws = jnp.array(SUZUKI_YOSHIDA_WEIGHTS[sy_steps], dtype=f32)
 
     def body_fn(cs, i):
       d = f32(delta * ws[i % sy_steps])
@@ -720,6 +720,8 @@ class NPTNoseHooverState:
   barostat: NoseHooverChain
   thermostat: NoseHooverChain
 
+  stress: Array
+
   @property
   def velocity(self) -> Array:
     return self.momentum / self.mass
@@ -826,10 +828,11 @@ def npt_nose_hoover(
       # TODO(schsam): This is necessary because of JAX issue #5849.
       box = jnp.eye(R.shape[-1]) * box
 
+    _E, _F, _dUdV = force_stress_fn(R, box, **kwargs)
     state = NPTNoseHooverState(
       R,
       None,
-      force_fn(R, box=box, **kwargs),
+      _F,
       mass,
       box,
       box_position,
@@ -837,6 +840,7 @@ def npt_nose_hoover(
       box_mass,
       barostat.initialize(1, KE_box, _kT),
       None,
+      _dUdV,
     )  # pytype: disable=wrong-arg-count
     state = canonicalize_mass(state)
     state = initialize_momenta(state, key, _kT)
@@ -850,13 +854,6 @@ def npt_nose_hoover(
     dtype = state.position.dtype
     box_mass = jnp.array(dim * (N + 1) * kT * state.barostat.tau**2, dtype)
     return state.set(box_mass=box_mass)
-
-  def stress_fn(position, box, **kwargs) -> Tuple[Array, Array]:
-    def U(eps):
-      return energy_fn(position, box=box, perturbation=(1 + eps), **kwargs)
-
-    E, dUdV = value_and_grad(U)(0.0)
-    return E, dUdV
 
   def force_stress_fn(position, box, **kwargs) -> Tuple[Array, Array, Array]:
     def U(position, eps):
@@ -916,7 +913,7 @@ def npt_nose_hoover(
     vol, box_fn = _npt_box_info(state)
 
     alpha = 1 + 1 / N
-    E, dUdV = stress_fn(R, box_fn(vol), **kwargs)
+    dUdV = state.stress  # reuse cached value from previous step
     G_e = box_force(alpha, vol, dUdV, R, P, M, _pressure)
     P_b = P_b + dt_2 * G_e
     P = exp_iL2(alpha, P, F, P_b / M_b)
@@ -941,6 +938,7 @@ def npt_nose_hoover(
       box_position=R_b,
       box_momentum=P_b,
       box_mass=M_b,
+      stress=dUdV,
     )
 
   def apply_fn(state, **kwargs):
@@ -1212,7 +1210,7 @@ def npt_nose_hoover_flex(
       return G_diag.at[0, 0].set(xy_avg).at[1, 1].set(xy_avg)
     else:  # isotropic
       avg = jnp.trace(G) / dim
-      return jnp.eye(dim) * avg
+      return jnp.eye(dim, dtype=G.dtype) * avg
 
   def _apply_box_constraint(box, ref_box, dim):
     """Project box to respect coupling constraints."""
@@ -1302,8 +1300,9 @@ def npt_nose_hoover_flex(
     vol = jnp.abs(jnp.linalg.det(box))
     KE_tensor = _kinetic_energy_tensor(mass, velocity)
     KE2 = jnp.trace(KE_tensor)
-    G = KE_tensor - dEdeps - vol * pressure * jnp.eye(dim) \
-      + KE2 / (N * dim) * jnp.eye(dim)
+    _dtype = velocity.dtype
+    G = KE_tensor - dEdeps - vol * pressure * jnp.eye(dim, dtype=_dtype) \
+      + KE2 / (N * dim) * jnp.eye(dim, dtype=_dtype)
     return _apply_coupling_constraint(G, dim)
 
   def sinhx_x(x):
