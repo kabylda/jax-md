@@ -366,6 +366,7 @@ def nve(
     kT: ArrayLike,
     mass: Array | float = f32(1.0),
     momenta: Array | None = None,
+    velocities: Array | None = None,
     **kwargs,
   ) -> NVEState:
     force = force_fn(R, **kwargs)
@@ -373,7 +374,9 @@ def nve(
     P = tree_map(jnp.zeros_like, R)
     state = NVEState(R, P, force, mass, fix_center_of_mass=fix_center_of_mass)
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, key, kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -732,6 +735,7 @@ def nvt_nose_hoover(
     R: Array,
     mass: Array | float = f32(1.0),
     momenta: Array | None = None,
+    velocities: Array | None = None,
     **kwargs,
   ) -> NVTNoseHooverState:
     _kT = kT if 'kT' not in kwargs else kwargs['kT']
@@ -755,7 +759,9 @@ def nvt_nose_hoover(
       fix_center_of_mass=fix_center_of_mass,
     )
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, key, _kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -989,6 +995,7 @@ def npt_nose_hoover(
     box: Box,
     mass: Array | float = f32(1.0),
     momenta: Array | None = None,
+    velocities: Array | None = None,
     **kwargs,
   ) -> NPTNoseHooverState:
     N, dim = R.shape
@@ -1027,7 +1034,9 @@ def npt_nose_hoover(
       fix_center_of_mass=fix_center_of_mass,
     )  # pytype: disable=wrong-arg-count
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, key, _kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -1429,15 +1438,18 @@ def npt_nose_hoover_flex(
       scale = (vol / ref_vol) ** (1.0 / dim)
       return jnp.diag(ref_diag * scale)
 
-  def init_fn(key, R, box, mass=f32(1.0), **kwargs):
+  def init_fn(key, R, box, mass=f32(1.0), velocities=None, **kwargs):
     N, dim = R.shape
 
     _kT = kT if 'kT' not in kwargs else kwargs.pop('kT')
     mass = canonicalize_mass(NPTNoseHooverFlexState(
       R, None, None, mass, None, None, None, None, None, None
     )).mass
-    V = jnp.sqrt(_kT / mass) * random.normal(key, R.shape, dtype=R.dtype)
-    V = V - jnp.mean(V * mass, axis=0, keepdims=True) / mass
+    if velocities is None:
+      V = jnp.sqrt(_kT / mass) * random.normal(key, R.shape, dtype=R.dtype)
+      V = V - jnp.mean(V * mass, axis=0, keepdims=True) / mass
+    else:
+      V = velocities
     KE = quantity.kinetic_energy(velocity=V, mass=mass)
 
     zero = jnp.zeros((dim, dim), dtype=R.dtype)
@@ -1834,6 +1846,7 @@ def nvt_langevin(
     R: Array,
     mass: Array | float = f32(1.0),
     momenta: Array | None = None,
+    velocities: Array | None = None,
     **kwargs,
   ) -> NVTLangevinState:
     _kT = kwargs.pop('kT', kT)
@@ -1848,7 +1861,9 @@ def nvt_langevin(
       fix_center_of_mass=fix_center_of_mass,
     )
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, split, _kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -2827,6 +2842,7 @@ def temp_rescale(
     R: Array,
     mass: Array | float = f32(1.0),
     momenta: Array | None = None,
+    velocities: Array | None = None,
     **kwargs,
   ) -> NVEState:
     # Reuse the NVEState dataclass
@@ -2838,7 +2854,9 @@ def temp_rescale(
       fix_center_of_mass=fix_center_of_mass,
     )
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, key, kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -2913,6 +2931,7 @@ def temp_berendsen(
     R: Array,
     mass: Array | float = f32(1.0),
     momenta: Array | None = None,
+    velocities: Array | None = None,
     **kwargs,
   ) -> NVEState:
     # Reuse the NVEState dataclass
@@ -2924,7 +2943,9 @@ def temp_berendsen(
       fix_center_of_mass=fix_center_of_mass,
     )
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, key, kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -3046,6 +3067,7 @@ def nvk(
     R: Array,
     mass: Array | float = f32(1.0),
     momenta: Array | None = None,
+    velocities: Array | None = None,
     **kwargs,
   ) -> NVEState:
     _kT = kwargs.pop('kT', kT)
@@ -3059,7 +3081,9 @@ def nvk(
       fix_center_of_mass=fix_center_of_mass,
     )
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, split, _kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -3167,6 +3191,7 @@ def temp_csvr(
     R: Array,
     mass: Array | float = f32(1.0),
     momenta: Array | None = None,
+    velocities: Array | None = None,
     **kwargs,
   ) -> NVTLangevinState:
     _kT = kwargs.pop('kT', kT)
@@ -3181,7 +3206,9 @@ def temp_csvr(
       fix_center_of_mass=fix_center_of_mass,
     )
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, split, _kT)
     else:
       state = canonicalize_momenta(state, momenta)
