@@ -804,6 +804,7 @@ def neighbor_list(
   r_cutoff: ArrayLike,
   dr_threshold: ArrayLike = 0.0,
   capacity_multiplier: float = 1.25,
+  minimum_cell_size_multiplier: float = 1.0,
   disable_cell_list: bool = False,
   mask_self: bool = True,
   custom_mask_function: MaskFn | None = None,
@@ -866,6 +867,9 @@ def neighbor_list(
     capacity_multiplier: A floating point scalar specifying the fractional
       increase in maximum neighborhood occupancy we allocate compared with the
       maximum in the example positions.
+    minimum_cell_size_multiplier: A floating point scalar that multiplies the
+      cell size. Increase above 1.0 to use larger cells when the cutoff is
+      short, reducing cell list overhead and avoiding excessive capacities.
     disable_cell_list: An optional boolean. If set to `True` then the neighbor
       list is constructed using only distances. This can be useful for
       debugging but should generally be left as `False`.
@@ -1044,10 +1048,10 @@ def neighbor_list(
       if not disable_cell_list:
         if neighbors is None:
           _box = kwargs.get('box', box)
-          cell_size = cutoff
+          cell_size = cutoff * minimum_cell_size_multiplier
           if fractional_coordinates:
             err = err.update(PEC.MALFORMED_BOX, is_box_valid(_box))
-            cell_size = _fractional_cell_size(_box, cutoff)
+            cell_size = _fractional_cell_size(_box, cutoff) * minimum_cell_size_multiplier
             _box = 1.0
           if jnp.all(jnp.asarray(cell_size) < _box / 3.0):
             cl_fn = cell_list(_box, cell_size, capacity_multiplier)
@@ -1132,7 +1136,7 @@ def neighbor_list(
       if nbrs.cell_list_fn is not None:
         cur_cell_size = _cell_size(1.0, nbrs.cell_size)
         new_cell_size = _cell_size(
-          1.0, _fractional_cell_size(kwargs['box'], cutoff)
+          1.0, _fractional_cell_size(kwargs['box'], cutoff) * minimum_cell_size_multiplier
         )
         err = err.update(PEC.CELL_SIZE_TOO_SMALL, new_cell_size > cur_cell_size)
       err = err.update(PEC.MALFORMED_BOX, is_box_valid(kwargs['box']))

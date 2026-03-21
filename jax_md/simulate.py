@@ -297,13 +297,15 @@ def nve(energy_or_force_fn, shift_fn, dt=1e-3, **sim_kwargs):
   force_fn = quantity.canonicalize_force(energy_or_force_fn)
 
   @jit
-  def init_fn(key, R, kT, mass=f32(1.0), momenta=None, **kwargs):
+  def init_fn(key, R, kT, mass=f32(1.0), momenta=None, velocities=None, **kwargs):
     force = force_fn(R, **kwargs)
     # Momentum placeholder; overwritten below once mass is canonical.
     P = tree_map(jnp.zeros_like, R)
     state = NVEState(R, P, force, mass)
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, key, kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -628,7 +630,7 @@ def nvt_nose_hoover(
   thermostat = nose_hoover_chain(dt, chain_length, chain_steps, sy_steps, tau)
 
   @jit
-  def init_fn(key, R, mass=f32(1.0), momenta=None, **kwargs):
+  def init_fn(key, R, mass=f32(1.0), momenta=None, velocities=None, **kwargs):
     _kT = kT if 'kT' not in kwargs else kwargs['kT']
 
     dof = quantity.count_dof(R)
@@ -639,7 +641,9 @@ def nvt_nose_hoover(
     chain = thermostat.initialize(dof, f32(0.0), _kT)
     state = NVTNoseHooverState(R, P, force_fn(R, **kwargs), mass, chain)
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, key, _kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -842,7 +846,7 @@ def npt_nose_hoover(
     dUdV = grads[1]
     return E, F, dUdV
 
-  def init_fn(key, R, box, mass=f32(1.0), momenta=None, **kwargs):
+  def init_fn(key, R, box, mass=f32(1.0), momenta=None, velocities=None, **kwargs):
     N, dim = R.shape
 
     _kT = kT if 'kT' not in kwargs else kwargs['kT']
@@ -876,7 +880,9 @@ def npt_nose_hoover(
       thermostat.initialize(quantity.count_dof(R), f32(0.0), _kT),
     )  # pytype: disable=wrong-arg-count
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, key, _kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -1262,15 +1268,18 @@ def npt_nose_hoover_flex(
       scale = (vol / ref_vol) ** (1.0 / dim)
       return jnp.diag(ref_diag * scale)
 
-  def init_fn(key, R, box, mass=f32(1.0), **kwargs):
+  def init_fn(key, R, box, mass=f32(1.0), velocities=None, **kwargs):
     N, dim = R.shape
 
     _kT = kT if 'kT' not in kwargs else kwargs.pop('kT')
     mass = canonicalize_mass(NPTNoseHooverFlexState(
       R, None, None, mass, None, None, None, None, None, None
     )).mass
-    V = jnp.sqrt(_kT / mass) * random.normal(key, R.shape, dtype=R.dtype)
-    V = V - jnp.mean(V * mass, axis=0, keepdims=True) / mass
+    if velocities is None:
+      V = jnp.sqrt(_kT / mass) * random.normal(key, R.shape, dtype=R.dtype)
+      V = V - jnp.mean(V * mass, axis=0, keepdims=True) / mass
+    else:
+      V = velocities
     KE = quantity.kinetic_energy(velocity=V, mass=mass)
 
     zero = jnp.zeros((dim, dim), dtype=R.dtype)
@@ -1642,13 +1651,15 @@ def nvt_langevin(
   force_fn = quantity.canonicalize_force(energy_or_force_fn)
 
   @jit
-  def init_fn(key, R, mass=f32(1.0), momenta=None, **kwargs):
+  def init_fn(key, R, mass=f32(1.0), momenta=None, velocities=None, **kwargs):
     _kT = kwargs.pop('kT', kT)
     key, split = random.split(key)
     force = force_fn(R, **kwargs)
     state = NVTLangevinState(R, tree_map(jnp.zeros_like, R), force, mass, key)
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, split, _kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -1965,13 +1976,15 @@ def temp_rescale(
     new_momentum = tree_map(lambda p: p * lam, state.momentum)
     return state.set(momentum=new_momentum)
 
-  def init_fn(key, R, mass=f32(1.0), momenta=None, **kwargs):
+  def init_fn(key, R, mass=f32(1.0), momenta=None, velocities=None, **kwargs):
     # Reuse the NVEState dataclass
     state = NVEState(
       R, tree_map(jnp.zeros_like, R), force_fn(R, **kwargs), mass
     )
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, key, kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -2031,13 +2044,15 @@ def temp_berendsen(
     new_momentum = tree_map(lambda p: p * lam, state.momentum)
     return state.set(momentum=new_momentum)
 
-  def init_fn(key, R, mass=f32(1.0), momenta=None, **kwargs):
+  def init_fn(key, R, mass=f32(1.0), momenta=None, velocities=None, **kwargs):
     # Reuse the NVEState dataclass
     state = NVEState(
       R, tree_map(jnp.zeros_like, R), force_fn(R, **kwargs), mass
     )
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, key, kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -2144,7 +2159,7 @@ def nvk(
     )
     return state.set(position=new_position)
 
-  def init_fn(key, R, mass=f32(1.0), momenta=None, **kwargs):
+  def init_fn(key, R, mass=f32(1.0), momenta=None, velocities=None, **kwargs):
     _kT = kwargs.pop('kT', kT)
     key, split = random.split(key)
     # Reuse the NVEState dataclass
@@ -2152,7 +2167,9 @@ def nvk(
       R, tree_map(jnp.zeros_like, R), force_fn(R, **kwargs), mass
     )
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, split, _kT)
     else:
       state = canonicalize_momenta(state, momenta)
@@ -2267,7 +2284,7 @@ def temp_csvr(
     new_momentum = tree_map(lambda p: p * lam, state.momentum)
     return state.set(momentum=new_momentum, rng=key)
 
-  def init_fn(key, R, mass=f32(1.0), momenta=None, **kwargs):
+  def init_fn(key, R, mass=f32(1.0), momenta=None, velocities=None, **kwargs):
     _kT = kwargs.pop('kT', kT)
     key, split = random.split(key)
     # Reuse the NVTLangevinState dataclass
@@ -2275,7 +2292,9 @@ def temp_csvr(
       R, tree_map(jnp.zeros_like, R), force_fn(R, **kwargs), mass, key
     )
     state = canonicalize_mass(state)
-    if momenta is None:
+    if velocities is not None:
+      state = state.set(momentum=state.mass * velocities)
+    elif momenta is None:
       state = initialize_momenta(state, split, _kT)
     else:
       state = canonicalize_momenta(state, momenta)
