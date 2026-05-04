@@ -41,6 +41,7 @@ from typing import (
   Callable,
   Dict,
   Generic,
+  Optional,
   ParamSpec,
   Tuple,
   TypeVar,
