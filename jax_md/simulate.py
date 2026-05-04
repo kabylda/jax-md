@@ -35,7 +35,7 @@ can be used for testing purposes, but is not often used otherwise.
 
 from collections import namedtuple
 
-from typing import Any, Callable, TypeVar, Union, Tuple, Dict
+from typing import Any, Callable, Dict, Optional, Tuple, TypeVar, Union
 
 import functools
 
