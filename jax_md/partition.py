@@ -331,9 +331,8 @@ def cell_list(
 
   def cell_list_fn(
     position: Array,
-    capacity_overflow_update: Optional[
-      Tuple[int, bool, Callable[..., CellList]]
-    ] = None,
+    capacity_overflow_update: Tuple[int, bool, Callable[..., CellList]]
+    | None = None,
     extra_capacity: int = 0,
     **kwargs,
   ) -> CellList:
@@ -693,11 +692,11 @@ class NeighborList:
   idx: Array
   reference_position: Array
   error: PartitionError
-  cell_list_capacity: Optional[int] = dataclasses.static_field()
+  cell_list_capacity: int | None = dataclasses.static_field()
   max_occupancy: int = dataclasses.static_field()
 
   format: NeighborListFormat = dataclasses.static_field()
-  cell_size: Optional[float] = dataclasses.static_field()
+  cell_size: float | None = dataclasses.static_field()
   cell_list_fn: Callable[[Array, CellList], CellList] = (
     dataclasses.static_field()
   )
@@ -742,7 +741,7 @@ class NeighborListFns:
   def __call__(
     self,
     position: Array,
-    neighbors: Optional[NeighborList] = None,
+    neighbors: NeighborList | None = None,
     extra_capacity: int = 0,
     **kwargs,
   ) -> NeighborList:
@@ -771,9 +770,7 @@ class NeighborListFns:
     return iter((self.allocate, self.update))
 
 
-NeighborFn = Callable[
-  [Array, Optional[NeighborList], Optional[int]], NeighborList
-]
+NeighborFn = Callable[[Array, NeighborList | None, int | None], NeighborList]
 
 
 def neighbor_list(
@@ -785,7 +782,7 @@ def neighbor_list(
   minimum_cell_size_multiplier: float = 1.0,
   disable_cell_list: bool = False,
   mask_self: bool = True,
-  custom_mask_function: Optional[MaskFn] = None,
+  custom_mask_function: MaskFn | None = None,
   fractional_coordinates: bool = False,
   format: NeighborListFormat = NeighborListFormat.Dense,
   **static_kwargs,
@@ -1158,10 +1155,10 @@ def neighbor_list_mask(
 
 def to_jraph(
   neighbor: NeighborList,
-  mask: Optional[Array] = None,
-  nodes: Optional[PyTree] = None,
-  edges: Optional[PyTree] = None,
-  globals: Optional[PyTree] = None,
+  mask: Array | None = None,
+  nodes: PyTree | None = None,
+  edges: PyTree | None = None,
+  globals: PyTree | None = None,
 ) -> jraph.GraphsTuple:
   """Convert a sparse neighbor list to a `jraph.GraphsTuple`.
 
