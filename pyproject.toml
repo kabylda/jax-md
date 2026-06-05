@@ -102,13 +102,13 @@ packages = ["jax_md"]
 "examples/models/*.pickle" = "examples/models"
 "examples/models/*.png" = "examples/models"
 
-[tool.hatch.build.targets.wheel.force-include]
-"jax_md/_nn/uma/Jd.pt" = "jax_md/_nn/uma/Jd.pt"
-"jax_md/_nn/uma/checkpoints" = "jax_md/_nn/uma/checkpoints"
-
-[tool.hatch.build.targets.sdist.force-include]
-"jax_md/_nn/uma/Jd.pt" = "jax_md/_nn/uma/Jd.pt"
-"jax_md/_nn/uma/checkpoints" = "jax_md/_nn/uma/checkpoints"
+# NOTE: the UMA data files (jax_md/_nn/uma/Jd.pt and
+# jax_md/_nn/uma/checkpoints/*.json) are tracked in git under the jax_md
+# package, so `packages = ["jax_md"]` above already ships them in both the
+# wheel and the sdist. The previous `force-include` tables re-added the same
+# paths, which made hatchling raise "A second file is being added to the wheel
+# archive at the same path" and broke `pip install` of this fork. They are
+# therefore removed.
 
 [tool.coverage.run]
 source = ["jax_md"]
