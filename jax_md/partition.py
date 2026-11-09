@@ -1040,6 +1040,9 @@ def neighbor_list(
   def neighbor_list_fn(
     position: Array, neighbors=None, extra_capacity: int = 0, **kwargs
   ) -> NeighborList:
+    if kwargs.get('box', 0) is None:
+      # box=None passed explicitly means "no box override", as when it is left out.
+      kwargs.pop('box')
     def neighbor_fn(
       position_and_error: Tuple[Array, PartitionError],
       max_occupancy: int | None = None,
